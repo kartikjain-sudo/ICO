@@ -32,7 +32,7 @@ contract ERC20Token is ERC20Interface {
             name = _name;
             symbol = _symbol;
             decimals = _decimals;
-            totalSupply = _totalSupply;
+            totalSupply = 100000000 * 10**decimals;
             balances[msg.sender] = _totalSupply;
         }
         
@@ -134,8 +134,15 @@ contract ICO {
     function whitelist(address investor) external onlyOwner() {
         investors[investor] = true;    
     }
+
+    /**
+     * @dev Fallback function if ether is sent to address insted of buyTokens function
+     **/
+    fallback() external payable {
+        buy();
+    }
     
-    function buy() external payable onlyInvestors() icoActive() {
+    function buy() public payable onlyInvestors() icoActive() {
 
         uint quantity = msg.value*price;
         require(quantity <= availableTokens - tokensSold, "Not enough tokens left for sale");
