@@ -27,13 +27,12 @@ contract ERC20Token is ERC20Interface {
     constructor(
         string memory _name,
         string memory _symbol,
-        uint8 _decimals,
-        uint _totalSupply) {
+        uint8 _decimals) {
             name = _name;
             symbol = _symbol;
             decimals = _decimals;
             totalSupply = 100000000 * 10**decimals;
-            balances[msg.sender] = _totalSupply;
+            balances[msg.sender] = totalSupply;
         }
         
     function transfer(address to, uint value) public override returns(bool) {
@@ -90,13 +89,11 @@ contract ICO {
     constructor(
         string memory _name,
         string memory _symbol,
-        uint8 _decimals,
-        uint _totalSupply) {
+        uint8 _decimals) {
         token = address(new ERC20Token(
             _name,
             _symbol,
-            _decimals,
-            _totalSupply
+            _decimals
         ));
         admin = msg.sender;
     }
@@ -139,6 +136,10 @@ contract ICO {
      * @dev Fallback function if ether is sent to address insted of buyTokens function
      **/
     fallback() external payable {
+        buy();
+    }
+
+    receive() external payable {
         buy();
     }
     
