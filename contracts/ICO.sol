@@ -9,6 +9,7 @@ interface ERC20Interface {
     function approve(address spender, uint tokens) external returns (bool success);
     function allowance(address tokenOwner, address spender) external view returns (uint remaining);
     function totalSupply() external view returns(uint);
+    function decimals() external view returns(uint8);
 
     event Transfer(address indexed from, address indexed to, uint tokens);
     event Approval(address indexed tokenOwner, address indexed spender, uint tokens);
@@ -18,7 +19,7 @@ contract ERC20Token is ERC20Interface {
 
     string public name;
     string public symbol;
-    uint8 public decimals;
+    uint8 public override decimals;
     uint public override totalSupply;
 
     mapping(address => uint) internal balances;
@@ -82,9 +83,14 @@ contract ICO {
     uint public price;
     uint public availableTokens;
     uint public tokensSold;
-    uint public minPurchase;
-    uint public maxPurchase;
+    uint8 private decimals = ERC20Token(token).decimals();
     bool public released = true;
+    uint256 public rateOne = 100;
+    uint256 public rateTwo = 50;
+    uint256 public icoOne = 30e6 * (10 ** decimals);
+    uint256 public icoTwo = 80e6 * (10 ** decimals);
+
+    enum SALE {PRESALE, SEEDSALE, CROWDSALE}
     
     constructor(
         string memory _name,
@@ -100,59 +106,123 @@ contract ICO {
     
     /*
      * @dev Only admin can start the ICO
-     * @param duration time period for the ico
+     * @param _duration time period for the ico in days
      * @param _price price of the single token
-     * @param _availableTokens Tokens available for the current ICO
-     * @param _minPurchase Minimum amount of tokens investors have to buy
-     * @param _maxPurchase Maximum amount of tokens investors can buy 
      */
     function start(
-        uint duration,
-        uint _price,
-        uint _availableTokens,
-        uint _minPurchase,
-        uint _maxPurchase)
-        external onlyOwner() icoNotActive() tokensReleased(){
-        require(duration > 0, "Invalid duration");
-        require(released == true, "last ICO Tokens not Released");
-        uint totalSupply = ERC20Token(token).totalSupply();
-        require(_availableTokens > 0 && _availableTokens <= totalSupply, "totalSupply exceded");
-        require(_minPurchase > 0, "minPurchase error");
-        require(_maxPurchase > _minPurchase && _maxPurchase <= _availableTokens, "maxPurchase error");
-        end = duration + block.timestamp; 
+        uint _duration,
+        uint _price)
+        external onlyOwner() icoNotActive() {
+        require(_duration > block.timestamp, "Invalid End Time");
+        availableTokens = ERC20Token(token).totalSupply();
         price = _price;
-        availableTokens = _availableTokens;
-        minPurchase = _minPurchase;
-        maxPurchase = _maxPurchase;
+        end = _duration * 24* 60 * 60;
         released = false;
     }
     
-    // @dev only whitelisted investors can buy the tokens
+    /// @dev only whitelisted investors can buy the tokens
     function whitelist(address investor) external onlyOwner() {
         investors[investor] = true;    
     }
 
-    /**
-     * @dev Fallback function if ether is sent to address insted of buyTokens function
-     **/
-    fallback() external payable {
-        buy();
+
+    /// @dev set the price of the token, only Owner can set this
+    function setPrice(uint rate) public onlyOwner {
+        require(rate != 0, "Invalid Price");
+        price = rate;
     }
 
+    /**
+     * @dev Receive function if ether is sent to address instead of buyTokens function
+     **/
     receive() external payable {
         buy();
     }
+
+    /*
+     * @dev calculates the tokens user will get depending on the amount and sale
+     * @param amountInWei amount for which user wants to buy tokens
+     * @param icoSale enum to check the presale, seedsale or crowdsale
+     * 
+     * @note this is an internal function
+     */
+    function calculateTokens(uint256 amountInWei, uint8 icoSale) internal view returns(uint256 calculatedTokens) {
+        require(amountInWei > 0, "Invalid Amount");
+
+        if(icoSale == 0)
+            calculatedTokens = (amountInWei*(10 ** decimals)/1e18) * rateOne;
+        else if(icoSale == 1)
+            calculatedTokens = (amountInWei*(10 ** decimals)/1e18) * rateTwo;
+        else if(icoSale == 2)
+            calculatedTokens = (amountInWei*(10 ** decimals)/1e18) * price;
+   }
+
+    /*
+     * @dev Calculates extra tokens if limit is exceeded from one of the sale
+     * Ex:- there are 100 tokens available in PRESALE and a user buys 200 tokens,
+     * then 100 tokens will be calculated from presale and 100 tokens will be 
+     * calculated from seedsale.
+     * @param amount amount of tokens for which the tokens will be bought
+     * @param icoSale enum for presale, seedsale or crowdfund
+     *
+     * @returns totalTokens amount of tokens that will be given to the user
+     * @returns leftWei when user sends more wei than the available tokens, then the 
+     *                  extra amount of wei will be transferred back to the user
+     */
+    function calculateExcessTokens(
+      uint256 amount,
+      uint8 icoSale
+    ) public view returns(uint256 totalTokens, uint256 leftWei) {
+        require(amount > 0, "Invalid Params");
+        require(icoSale >= 1 && icoSale <= 3, "Invalid Sale");
+
+        uint maxTokens = calculateTokens(amount, icoSale);
+        if (tokensSold < icoOne && tokensSold + maxTokens > icoOne) {
+            uint tokensFromIcoOne = icoOne - tokensSold;
+            uint tokensToWei = tokensFromIcoOne * 1e18 / 10**decimals / rateOne;
+            uint leftAmount = amount - tokensToWei;
+            uint tokensFromIcoTwo = calculateTokens(leftAmount, uint8(SALE.SEEDSALE));
+            totalTokens = tokensFromIcoOne + tokensFromIcoTwo;
+            leftWei = 0;
+        }
+        else if (tokensSold < icoTwo && tokensSold + maxTokens > icoTwo) {
+            uint tokensFromIcoTwo = icoTwo - tokensSold;
+            uint tokensToWei = tokensFromIcoTwo * 1e18 / 10**decimals / rateTwo;
+            uint leftAmount = amount - tokensToWei;
+            uint tokensFromIcoThree = calculateTokens(leftAmount, uint8(SALE.CROWDSALE));
+            totalTokens = tokensFromIcoTwo + tokensFromIcoThree;
+            leftWei = 0;
+        }
+        else if (tokensSold + maxTokens > ERC20Token(token).totalSupply()) {
+            uint tokensFromIcoThree = ERC20Token(token).totalSupply() - tokensSold;
+            uint tokensToWei = tokensFromIcoThree * 1e18 / 10**decimals / rateTwo;
+            leftWei = amount - tokensToWei;
+            totalTokens = tokensFromIcoThree;
+        }
+    }
     
+    /// @dev buy function for users to buy tokens
     function buy() public payable onlyInvestors() icoActive() {
 
-        uint quantity = msg.value*price;
-        require(quantity <= availableTokens - tokensSold, "Not enough tokens left for sale");
-        require(quantity >= minPurchase && quantity <= maxPurchase, "invalid Range");
+        uint quantity;
+        uint leftWei;
+        uint value = msg.value;
+
+        if (tokensSold < icoOne) {
+            (quantity, leftWei) = calculateExcessTokens(value, uint8(SALE.PRESALE));
+        } else if (tokensSold < icoTwo) {
+            (quantity, leftWei) = calculateExcessTokens(value, uint8(SALE.SEEDSALE));
+        } else {
+            (quantity, leftWei) = calculateExcessTokens(value, uint8(SALE.CROWDSALE));
+        }
+        require(quantity <= availableTokens, "Not enough tokens left for sale");
         tokensSold += quantity;
+        availableTokens -= quantity;
         sales.push(Sale(
             msg.sender,
             quantity
         ));
+        if (leftWei > 0) payable(msg.sender).transfer(leftWei);
     }
     
     /* @dev releases the tokens back to the investors after the ico has been ended
@@ -161,8 +231,6 @@ contract ICO {
     function release() external onlyOwner() icoEnded() tokensNotReleased() {
 
         released = true;
-        availableTokens = 0;
-        tokensSold = 0;
         end = 0;
         ERC20Token tokenInstance = ERC20Token(token);
         for(uint i = 0; i < sales.length; i++) {
